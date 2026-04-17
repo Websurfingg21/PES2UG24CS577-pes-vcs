@@ -94,9 +94,83 @@ int object_exists(const ObjectID *id) {
 //
 // Returns 0 on success, -1 on error.
 int object_write(ObjectType type, const void *data, size_t len, ObjectID *id_out) {
-    // TODO: Implement
-    (void)type; (void)data; (void)len; (void)id_out;
-    return -1;
+    const char *type_str;
+    switch (type) {
+        case OBJ_BLOB: type_str = "blob"; break;
+        case OBJ_TREE: type_str = "tree"; break;
+        case OBJ_COMMIT: type_str = "commit"; break;
+        default: return -1;
+    }
+
+    char header[64];
+    int header_len = snprintf(header, sizeof(header), "%s %zu", type_str, len);
+    header[header_len] = '\0';
+    header_len += 1;
+
+    size_t total_len = header_len + len;
+    char *full = malloc(total_len);
+    if (!full) return -1;
+
+    memcpy(full, header, header_len);
+    memcpy(full + header_len, data, len);
+
+    compute_hash(full, total_len, id_out);
+
+    if (object_exists(id_out)) {
+        free(full);
+        return 0;
+    }
+
+    char path[512];
+    object_path(id_out, path, sizeof(path));
+
+    char dir[512];
+    strncpy(dir, path, sizeof(dir));
+    char *slash = strrchr(dir, '/');
+    if (slash) {
+        *slash = '\0';
+        if (mkdir(dir, 0755) < 0 && errno != EEXIST) {
+            free(full);
+            return -1;
+        }
+    }
+
+    char temp_path[512];
+    snprintf(temp_path, sizeof(temp_path), "%s.tmp", path);
+
+    int fd = open(temp_path, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+    if (fd < 0) {
+        free(full);
+        return -1;
+    }
+
+    ssize_t written = 0;
+    while (written < total_len) {
+        ssize_t n = write(fd, full + written, total_len - written);
+        if (n <= 0) {
+            close(fd);
+            free(full);
+            return -1;
+        }
+        written += n;
+    }
+
+    fsync(fd);
+    close(fd);
+
+    if (rename(temp_path, path) < 0) {
+        free(full);
+        return -1;
+    }
+
+    int dir_fd = open(dir, O_DIRECTORY);
+    if (dir_fd >= 0) {
+        fsync(dir_fd);
+        close(dir_fd);
+    }
+
+    free(full);
+    return 0;
 }
 
 // Read an object from the store.
