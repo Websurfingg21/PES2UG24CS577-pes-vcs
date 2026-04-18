@@ -78,9 +78,7 @@ int commit_serialize(const Commit *commit, void **data_out, size_t *len_out) {
     char parent_hex[HASH_HEX_SIZE + 1];
     hash_to_hex(&commit->tree, tree_hex);
 
-
     char buf[8192];
-    memset(buf, 0, sizeof(buf));
     int n = 0;
     n += snprintf(buf + n, sizeof(buf) - n, "tree %s\n", tree_hex);
     if (commit->has_parent) {
@@ -198,45 +196,52 @@ int head_update(const ObjectID *new_commit) {
 // Returns 0 on success, -1 on error.
 int commit_create(const char *message, ObjectID *commit_id_out) {
 
-    ObjectID tree_id;
-    if (tree_from_index(&tree_id) != 0)
+    Commit c;
+    memset(&c, 0, sizeof(c));
+
+    /* create tree from staging area */
+    if (tree_from_index(&c.tree) != 0) {
+        fprintf(stderr, "error: failed to create tree\n");
         return -1;
-
-    Commit commit;
-    memset(&commit, 0, sizeof(commit));
-    commit.tree = tree_id;
-
-    ObjectID parent_id;
-    if (head_read(&parent_id) == 0) {
-        commit.parent = parent_id;
-        commit.has_parent = 1;
-    } else {
-        commit.has_parent = 0;
     }
 
-    snprintf(commit.author, sizeof(commit.author), "%s", pes_author());
-    commit.timestamp = (uint64_t)time(NULL);
+    /* check if we have a parent commit */
+    ObjectID parent;
+    if (head_read(&parent) == 0) {
+        c.has_parent = 1;
+        c.parent = parent;
+    } else {
+        c.has_parent = 0;
+    }
 
-    snprintf(commit.message, sizeof(commit.message), "%s", message);
+    /* set author */
+    snprintf(c.author, sizeof(c.author), "%s", pes_author());
 
+    /* timestamp */
+    c.timestamp = (uint64_t)time(NULL);
+
+    /* commit message */
+    snprintf(c.message, sizeof(c.message), "%s", message);
+
+    /* serialize commit */
     void *data;
     size_t len;
-    if (commit_serialize(&commit, &data, &len) != 0)
+    if (commit_serialize(&c, &data, &len) != 0) {
         return -1;
+    }
 
-    ObjectID commit_id;
-    if (object_write(OBJ_COMMIT, data, len, &commit_id) != 0) {
+    /* write commit object */
+    if (object_write(OBJ_COMMIT, data, len, commit_id_out) != 0) {
         free(data);
         return -1;
     }
 
     free(data);
 
-    if (head_update(&commit_id) != 0)
+    /* update HEAD */
+    if (head_update(commit_id_out) != 0) {
         return -1;
-
-    if (commit_id_out)
-        *commit_id_out = commit_id;
+    }
 
     return 0;
 }
