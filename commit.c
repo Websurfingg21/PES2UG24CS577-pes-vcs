@@ -227,5 +227,13 @@ int commit_create(const char *message, ObjectID *commit_id_out) {
         return -1;
     }
 
+    free(data);
+
+    if (head_update(&commit_id) != 0)
+        return -1;
+
+    if (commit_id_out)
+        *commit_id_out = commit_id;
+
     return 0;
 }
