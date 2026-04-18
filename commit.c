@@ -78,7 +78,9 @@ int commit_serialize(const Commit *commit, void **data_out, size_t *len_out) {
     char parent_hex[HASH_HEX_SIZE + 1];
     hash_to_hex(&commit->tree, tree_hex);
 
+
     char buf[8192];
+    memset(buf, 0, sizeof(buf));
     int n = 0;
     n += snprintf(buf + n, sizeof(buf) - n, "tree %s\n", tree_hex);
     if (commit->has_parent) {
@@ -96,7 +98,8 @@ int commit_serialize(const Commit *commit, void **data_out, size_t *len_out) {
 
     *data_out = malloc(n + 1);
     if (!*data_out) return -1;
-    memcpy(*data_out, buf, n + 1);
+    memcpy(*data_out, buf, n);
+    ((char*)*data_out)[n] = '\0';
     *len_out = (size_t)n;
     return 0;
 }
