@@ -23,7 +23,6 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <dirent.h>
-#include <time.h>
 
 // ─── PROVIDED ────────────────────────────────────────────────────────────────
 
@@ -135,30 +134,38 @@ int index_status(const Index *index) {
 //   - hex_to_hash                      : converting the parsed string to ObjectID
 //
 // Returns 0 on success, -1 on error.
-int index_load(Index *index) {
-    FILE *f = fopen(".pes/index", "r");
+int index_load(Index *idx) {
+
+    FILE *f = fopen(INDEX_FILE, "r");
 
     if (!f) {
-        index->count = 0;
+        idx->count = 0;
         return 0;
     }
 
-    index->count = 0;
+    idx->count = 0;
 
-    char mode_str[16], hash_hex[HASH_HEX_SIZE + 1], path[256];
-    long mtime;
-    size_t size;
+    while (idx->count < MAX_INDEX_ENTRIES) {
 
-    while (fscanf(f, "%s %s %ld %zu %s",
-                  mode_str, hash_hex, &mtime, &size, path) == 5) {
+        IndexEntry *e = &idx->entries[idx->count];
 
-        IndexEntry *e = &index->entries[index->count++];
+        char hash_hex[HASH_HEX_SIZE + 1];
 
-        e->mode = strtol(mode_str, NULL, 8);
-        hex_to_hash(hash_hex, &e->hash);
-        e->mtime_sec = mtime;
-        e->size = size;
-        strncpy(e->path, path, sizeof(e->path));
+        if (fscanf(f, "%o %64s %ld %ld %s",
+                   &e->mode,
+                   hash_hex,
+                   &e->mtime_sec,
+                   &e->size,
+                   e->path) != 5) {
+            break;
+        }
+
+        if (hex_to_hash(hash_hex, &e->hash) != 0) {
+            fclose(f);
+            return -1;
+        }
+
+        idx->count++;
     }
 
     fclose(f);
@@ -176,22 +183,34 @@ int index_load(Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_save(const Index *index) {
-    FILE *f = fopen(".pes/index", "w");
+
+    char tmp_path[256];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", INDEX_FILE);
+
+    FILE *f = fopen(tmp_path, "w");
     if (!f) return -1;
 
     for (int i = 0; i < index->count; i++) {
-        char hex[HASH_HEX_SIZE + 1];
-        hash_to_hex(&index->entries[i].hash, hex);
 
-        fprintf(f, "%o %s %ld %zu %s\n",
-                index->entries[i].mode,
-                hex,
-                index->entries[i].mtime_sec,
-                index->entries[i].size,
-                index->entries[i].path);
+        const IndexEntry *e = &index->entries[i];
+
+        char hash_hex[HASH_HEX_SIZE + 1];
+        hash_to_hex(&e->hash, hash_hex);
+
+        fprintf(f, "%o %s %ld %ld %s\n",
+                e->mode,
+                hash_hex,
+                e->mtime_sec,
+                e->size,
+                e->path);
     }
 
+    fflush(f);
+    fsync(fileno(f));
     fclose(f);
+
+    rename(tmp_path, INDEX_FILE);
+
     return 0;
 }
 
@@ -205,49 +224,64 @@ int index_save(const Index *index) {
 //
 // Returns 0 on success, -1 on error.
 int index_add(Index *index, const char *path) {
-    // 1. Read file
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
 
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "error: cannot open '%s'\n", path);
+        return -1;
+    }
+
+    /* read file contents */
     fseek(f, 0, SEEK_END);
     size_t size = ftell(f);
     rewind(f);
 
-    void *data = malloc(size);
+    void *data = malloc(size ? size : 1);
     if (!data) {
         fclose(f);
         return -1;
     }
 
-    if (fread(data, 1, size, f) != size) {
+    if (size > 0 && fread(data, 1, size, f) != size) {
         free(data);
         fclose(f);
         return -1;
     }
     fclose(f);
 
-    ObjectID id;
-    if (object_write(OBJ_BLOB, data, size, &id) < 0) {
+    /* store as blob object */
+    ObjectID hash;
+    if (object_write(OBJ_BLOB, data, size, &hash) != 0) {
         free(data);
         return -1;
     }
 
     free(data);
 
+    /* get file metadata */
     struct stat st;
-    if (stat(path, &st) < 0) return -1;
+    if (stat(path, &st) != 0) {
+        return -1;
+    }
 
+    /* check if entry already exists */
     IndexEntry *e = index_find(index, path);
 
     if (!e) {
+        if (index->count >= MAX_INDEX_ENTRIES) {
+            fprintf(stderr, "error: index full\n");
+            return -1;
+        }
+
         e = &index->entries[index->count++];
+        strncpy(e->path, path, sizeof(e->path) - 1);
+        e->path[sizeof(e->path) - 1] = '\0';
     }
 
     e->mode = (st.st_mode & S_IXUSR) ? 0100755 : 0100644;
-    e->hash = id;
     e->mtime_sec = st.st_mtime;
     e->size = st.st_size;
-    strncpy(e->path, path, sizeof(e->path));
+    e->hash = hash;
 
     return index_save(index);
 }
