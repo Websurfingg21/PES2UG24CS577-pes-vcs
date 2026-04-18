@@ -199,5 +199,18 @@ int commit_create(const char *message, ObjectID *commit_id_out) {
     if (tree_from_index(&tree_id) != 0)
         return -1;
 
+    Commit commit;
+    memset(&commit, 0, sizeof(commit));
+    commit.tree = tree_id;
+
+    ObjectID parent_id;
+    if (head_read(&parent_id) == 0) {
+        commit.parent = parent_id;
+        commit.has_parent = 1;
+    } else {
+        commit.has_parent = 0;
+    }
+
+
     return 0;
 }
